@@ -32,6 +32,13 @@ type WireguardConfig struct {
 	PublicKey    *string
 	EndpointIP   *string
 	EndpointPort *string
+	Peers        []WireguardPeerConfig
+}
+
+type WireguardPeerConfig struct {
+	PublicKey    *string
+	EndpointIP   *string
+	EndpointPort *string
 }
 
 var regexINISectionNotExist = regexp.MustCompile(`^section ".+" does not exist$`)
@@ -49,17 +56,32 @@ func ParseWireguardConf(path string) (config WireguardConfig, err error) {
 	if err == nil {
 		config.PrivateKey, config.Addresses = parseWireguardInterfaceSection(interfaceSection)
 	} else if !regexINISectionNotExist.MatchString(err.Error()) {
-		// can never happen
 		return WireguardConfig{}, fmt.Errorf("getting interface section: %w", err)
 	}
 
-	peerSection, err := iniFile.GetSection("Peer")
-	if err == nil {
-		config.PreSharedKey, config.PublicKey, config.EndpointIP,
-			config.EndpointPort = parseWireguardPeerSection(peerSection)
-	} else if !regexINISectionNotExist.MatchString(err.Error()) {
-		// can never happen
-		return WireguardConfig{}, fmt.Errorf("getting peer section: %w", err)
+	peerSections, err := iniFile.SectionsByName("Peer")
+	if err != nil && !regexINISectionNotExist.MatchString(err.Error()) {
+		return WireguardConfig{}, fmt.Errorf("getting peer sections: %w", err)
+	}
+	for _, peerSection := range peerSections {
+		preSharedKey, publicKey, endpointIP, endpointPort := parseWireguardPeerSection(peerSection)
+		if preSharedKey != nil && config.PreSharedKey == nil {
+			config.PreSharedKey = preSharedKey
+		}
+		if publicKey != nil && config.PublicKey == nil {
+			config.PublicKey = publicKey
+		}
+		if endpointIP != nil && config.EndpointIP == nil {
+			config.EndpointIP = endpointIP
+		}
+		if endpointPort != nil && config.EndpointPort == nil {
+			config.EndpointPort = endpointPort
+		}
+		config.Peers = append(config.Peers, WireguardPeerConfig{
+			PublicKey:    publicKey,
+			EndpointIP:   endpointIP,
+			EndpointPort: endpointPort,
+		})
 	}
 
 	return config, nil
@@ -100,7 +122,6 @@ func getINIKeyFromSection(section *ini.Section, key string) (value *string) {
 		if regexINIKeyNotExist.MatchString(err.Error()) {
 			return nil
 		}
-		// can never happen
 		panic(fmt.Sprintf("getting key %q: %s", key, err))
 	}
 	value = new(string)

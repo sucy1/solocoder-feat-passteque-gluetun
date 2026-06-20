@@ -90,5 +90,23 @@ func buildWireguardSettings(connection models.Connection,
 
 	settings.PersistentKeepaliveInterval = *userSettings.PersistentKeepaliveInterval
 
+	if len(userSettings.Peers) > 0 {
+		settings.Peers = make([]wireguard.Peer, 0, len(userSettings.Peers))
+		for _, userPeer := range userSettings.Peers {
+			var peer wireguard.Peer
+			peer.PublicKey = *userPeer.PublicKey
+			peer.Endpoint = netip.AddrPortFrom(userPeer.EndpointIP, *userPeer.EndpointPort)
+			peer.PersistentKeepaliveInterval = *userPeer.PersistentKeepaliveInterval
+			peer.AllowedIPs = make([]netip.Prefix, 0, len(userPeer.AllowedIPs))
+			for _, allowedIP := range userPeer.AllowedIPs {
+				if !ipv6Supported && allowedIP.Addr().Is6() {
+					continue
+				}
+				peer.AllowedIPs = append(peer.AllowedIPs, allowedIP)
+			}
+			settings.Peers = append(settings.Peers, peer)
+		}
+	}
+
 	return settings
 }

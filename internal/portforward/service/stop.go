@@ -63,5 +63,10 @@ func (s *Service) cleanup() (err error) {
 		return fmt.Errorf("clearing port file: %w", err)
 	}
 
+	err = s.clearStateFile()
+	if err != nil {
+		return fmt.Errorf("clearing port forward state file: %w", err)
+	}
+
 	return nil
 }

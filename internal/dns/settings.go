@@ -55,6 +55,7 @@ func buildServerSettings(userSettings settings.DNS,
 	case settings.DNSUpstreamTypeDoh:
 		dialerSettings := doh.Settings{
 			UpstreamResolvers: upstreamResolvers,
+			Timeout:           *userSettings.DoHTimeout,
 			IPVersion:         ipVersion,
 		}
 		dialer, err = doh.New(dialerSettings)
@@ -123,16 +124,34 @@ func buildProviders(userSettings settings.DNS, localSubnets []netip.Prefix,
 	userDefinedPlainAddresses := userSettings.UpstreamType == settings.DNSUpstreamTypePlain &&
 		len(userSettings.UpstreamPlainAddresses) > 0
 	if !userDefinedPlainAddresses {
-		providers = make([]provider.Provider, len(userSettings.Providers))
 		providersData := provider.NewProviders()
+		builtinProviders := make([]provider.Provider, len(userSettings.Providers))
 		for i, providerName := range userSettings.Providers {
 			var err error
-			providers[i], err = providersData.Get(providerName)
+			builtinProviders[i], err = providersData.Get(providerName)
 			if err != nil {
 				panic(err) // this should already had been checked
 			}
 		}
-		return providers
+
+		if len(userSettings.UpstreamDoHURLs) > 0 {
+			dohProviders := make([]provider.Provider, len(userSettings.UpstreamDoHURLs))
+			for i, dohURL := range userSettings.UpstreamDoHURLs {
+				dohProviders[i] = provider.Provider{
+					Name: dohURL,
+					DoH: provider.DoHServer{
+						URL: dohURL,
+					},
+				}
+			}
+			providers = make([]provider.Provider, 0,
+				len(dohProviders)+len(builtinProviders))
+			providers = append(providers, dohProviders...)
+			providers = append(providers, builtinProviders...)
+			return providers
+		}
+
+		return builtinProviders
 	}
 
 	providers = make([]provider.Provider, len(userSettings.UpstreamPlainAddresses))

@@ -48,6 +48,16 @@ type Settings struct {
 	// Implementation is the implementation to use.
 	// It can be auto, kernelspace or userspace, and defaults to auto.
 	Implementation string
+	// Peers is the list of Wireguard peers to connect to.
+	// If set, it takes precedence over the single-peer fields.
+	Peers []Peer
+}
+
+type Peer struct {
+	PublicKey                   string
+	AllowedIPs                  []netip.Prefix
+	Endpoint                    netip.AddrPort
+	PersistentKeepaliveInterval time.Duration
 }
 
 func (s *Settings) SetDefaults() {
@@ -86,6 +96,10 @@ func (s *Settings) SetDefaults() {
 		const defaultImplementation = "auto"
 		s.Implementation = defaultImplementation
 	}
+
+	for i := range s.Peers {
+		s.Peers[i].SetDefaults()
+	}
 }
 
 var interfaceNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
@@ -101,23 +115,31 @@ func (s *Settings) Check() (err error) {
 		return errors.New("cannot parse private key")
 	}
 
-	if s.PublicKey == "" {
-		return errors.New("public key is missing")
-	} else if _, err := wgtypes.ParseKey(s.PublicKey); err != nil {
-		return fmt.Errorf("cannot parse public key: %s", s.PublicKey)
-	}
-
-	if s.PreSharedKey != "" {
-		if _, err := wgtypes.ParseKey(s.PreSharedKey); err != nil {
-			return errors.New("cannot parse pre-shared key")
+	if len(s.Peers) > 0 {
+		for i, peer := range s.Peers {
+			if err := peer.Check(); err != nil {
+				return fmt.Errorf("peer %d: %w", i, err)
+			}
 		}
-	}
+	} else {
+		if s.PublicKey == "" {
+			return errors.New("public key is missing")
+		} else if _, err := wgtypes.ParseKey(s.PublicKey); err != nil {
+			return fmt.Errorf("cannot parse public key: %s", s.PublicKey)
+		}
 
-	switch {
-	case !s.Endpoint.Addr().IsValid():
-		return errors.New("endpoint address is missing")
-	case s.Endpoint.Port() == 0:
-		return errors.New("endpoint port is missing")
+		if s.PreSharedKey != "" {
+			if _, err := wgtypes.ParseKey(s.PreSharedKey); err != nil {
+				return errors.New("cannot parse pre-shared key")
+			}
+		}
+
+		switch {
+		case !s.Endpoint.Addr().IsValid():
+			return errors.New("endpoint address is missing")
+		case s.Endpoint.Port() == 0:
+			return errors.New("endpoint port is missing")
+		}
 	}
 
 	if len(s.Addresses) == 0 {
@@ -276,6 +298,94 @@ func (s Settings) ToLines(settings ToLinesSettings) (lines []string) {
 	if s.PersistentKeepaliveInterval > 0 {
 		lines = append(lines, fieldPrefix+"Persistent keep alive interval: "+
 			s.PersistentKeepaliveInterval.String())
+	}
+
+	if len(s.Peers) > 0 {
+		peersLines := []string{fieldPrefix + "Peers:"}
+		for i, peer := range s.Peers {
+			peerLines := peer.ToLines(ToLinesSettings{
+				Indent:          settings.Indent,
+				FieldPrefix:     settings.FieldPrefix,
+				LastFieldPrefix: settings.LastFieldPrefix,
+			})
+			peersLines = append(peersLines, indent+fieldPrefix+fmt.Sprintf("Peer %d:", i))
+			for _, peerLine := range peerLines {
+				peersLines = append(peersLines, indent+indent+peerLine)
+			}
+		}
+		lines = append(lines, peersLines...)
+	}
+
+	return lines
+}
+
+func (p *Peer) SetDefaults() {
+	if p.Endpoint.IsValid() && p.Endpoint.Port() == 0 {
+		const defaultPort = 51820
+		p.Endpoint = netip.AddrPortFrom(p.Endpoint.Addr(), defaultPort)
+	}
+
+	if len(p.AllowedIPs) == 0 {
+		p.AllowedIPs = append(p.AllowedIPs, allIPv4())
+	}
+}
+
+func (p Peer) Check() (err error) {
+	if p.PublicKey == "" {
+		return errors.New("public key is missing")
+	} else if _, err := wgtypes.ParseKey(p.PublicKey); err != nil {
+		return fmt.Errorf("cannot parse public key: %s", p.PublicKey)
+	}
+
+	switch {
+	case !p.Endpoint.Addr().IsValid():
+		return errors.New("endpoint address is missing")
+	case p.Endpoint.Port() == 0:
+		return errors.New("endpoint port is missing")
+	}
+
+	if len(p.AllowedIPs) == 0 {
+		return errors.New("allowed IPs are missing")
+	}
+	for i, allowedIP := range p.AllowedIPs {
+		if !allowedIP.IsValid() {
+			return fmt.Errorf("allowed IP is not valid: for allowed IP %d of %d",
+				i+1, len(p.AllowedIPs))
+		}
+	}
+
+	if p.PersistentKeepaliveInterval < 0 {
+		return fmt.Errorf("keep alive interval is negative: %s", p.PersistentKeepaliveInterval)
+	}
+
+	return nil
+}
+
+func (p Peer) ToLines(settings ToLinesSettings) (lines []string) {
+	settings.setDefaults()
+
+	fieldPrefix := *settings.FieldPrefix
+
+	if p.PublicKey != "" {
+		lines = append(lines, fieldPrefix+"PublicKey: "+p.PublicKey)
+	}
+
+	endpointStr := "not set"
+	if p.Endpoint.Addr().IsValid() {
+		endpointStr = p.Endpoint.String()
+	}
+	lines = append(lines, fieldPrefix+"Endpoint: "+endpointStr)
+
+	if len(p.AllowedIPs) > 0 {
+		lines = append(lines, fieldPrefix+"Allowed IPs:")
+		for _, allowedIP := range p.AllowedIPs {
+			lines = append(lines, *settings.Indent+fieldPrefix+allowedIP.String())
+		}
+	}
+
+	if p.PersistentKeepaliveInterval > 0 {
+		lines = append(lines, fieldPrefix+"Persistent keep alive interval: "+
+			p.PersistentKeepaliveInterval.String())
 	}
 
 	return lines

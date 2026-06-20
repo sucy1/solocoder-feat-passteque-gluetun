@@ -25,6 +25,7 @@ type Logger interface {
 	Info(s string)
 	Warn(s string)
 	Error(s string)
+	Infof(format string, args ...any)
 }
 
 type PortForwarder interface {

@@ -20,6 +20,9 @@ import (
 
 type tunnelUpData struct {
 	upCommand string
+	// Hooks
+	readyHook      string
+	hookTimeout    time.Duration
 	// Healthcheck
 	serverIP netip.Addr
 	pmtud    tunnelUpPMTUDData
@@ -127,6 +130,10 @@ func (l *Loop) onTunnelUp(ctx, loopCtx context.Context, data tunnelUpData) {
 		if err != nil {
 			l.logger.Error("failed to run VPN up command: " + err.Error())
 		}
+	}
+
+	if data.readyHook != "" {
+		go executeHook(context.Background(), data.readyHook, data.hookTimeout, l.logger, l.client)
 	}
 
 	err = l.startPortForwarding(data)

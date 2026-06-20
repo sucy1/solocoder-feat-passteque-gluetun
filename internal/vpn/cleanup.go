@@ -9,8 +9,12 @@ import (
 	"github.com/qdm12/gluetun/internal/constants/vpn"
 )
 
-func (l *Loop) cleanup() {
+func (l *Loop) cleanup(unexpectedDisconnect bool) {
 	settings := l.GetSettings()
+
+	if unexpectedDisconnect && *settings.DisconnectHook != "" {
+		go executeHook(context.Background(), *settings.DisconnectHook, *settings.HookTimeout, l.logger, l.client)
+	}
 
 	var err error
 	if *settings.DownCommand != "" {

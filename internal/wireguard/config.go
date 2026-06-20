@@ -31,16 +31,42 @@ func makeDeviceConfig(settings Settings) (config wgtypes.Config, err error) {
 		return config, errors.New("cannot parse private key")
 	}
 
+	firewallMark := int(settings.FirewallMark)
+
+	var peerConfigs []wgtypes.PeerConfig
+	if len(settings.Peers) > 0 {
+		peerConfigs, err = makeMultiPeerConfigs(settings.Peers)
+		if err != nil {
+			return config, err
+		}
+	} else {
+		peerConfigs, err = makeSinglePeerConfig(settings)
+		if err != nil {
+			return config, err
+		}
+	}
+
+	config = wgtypes.Config{
+		PrivateKey:   &privateKey,
+		ReplacePeers: true,
+		FirewallMark: &firewallMark,
+		Peers:        peerConfigs,
+	}
+
+	return config, nil
+}
+
+func makeSinglePeerConfig(settings Settings) (peers []wgtypes.PeerConfig, err error) {
 	publicKey, err := wgtypes.ParseKey(settings.PublicKey)
 	if err != nil {
-		return config, fmt.Errorf("cannot parse public key: %s", settings.PublicKey)
+		return nil, fmt.Errorf("cannot parse public key: %s", settings.PublicKey)
 	}
 
 	var preSharedKey *wgtypes.Key
 	if settings.PreSharedKey != "" {
 		preSharedKeyValue, err := wgtypes.ParseKey(settings.PreSharedKey)
 		if err != nil {
-			return config, errors.New("cannot parse pre-shared key")
+			return nil, errors.New("cannot parse pre-shared key")
 		}
 		preSharedKey = &preSharedKeyValue
 	}
@@ -51,37 +77,67 @@ func makeDeviceConfig(settings Settings) (config wgtypes.Config, err error) {
 		*persistentKeepaliveInterval = settings.PersistentKeepaliveInterval
 	}
 
-	firewallMark := int(settings.FirewallMark)
-
-	config = wgtypes.Config{
-		PrivateKey:   &privateKey,
-		ReplacePeers: true,
-		FirewallMark: &firewallMark,
-		Peers: []wgtypes.PeerConfig{
-			{
-				PublicKey:    publicKey,
-				PresharedKey: preSharedKey,
-				AllowedIPs: []net.IPNet{
-					{
-						IP:   net.IPv4(0, 0, 0, 0),
-						Mask: []byte{0, 0, 0, 0},
-					},
-					{
-						IP:   net.IPv6zero,
-						Mask: []byte(net.IPv6zero),
-					},
+	peers = []wgtypes.PeerConfig{
+		{
+			PublicKey:    publicKey,
+			PresharedKey: preSharedKey,
+			AllowedIPs: []net.IPNet{
+				{
+					IP:   net.IPv4(0, 0, 0, 0),
+					Mask: []byte{0, 0, 0, 0},
 				},
-				PersistentKeepaliveInterval: persistentKeepaliveInterval,
-				ReplaceAllowedIPs:           true,
-				Endpoint: &net.UDPAddr{
-					IP:   settings.Endpoint.Addr().AsSlice(),
-					Port: int(settings.Endpoint.Port()),
+				{
+					IP:   net.IPv6zero,
+					Mask: []byte(net.IPv6zero),
 				},
+			},
+			PersistentKeepaliveInterval: persistentKeepaliveInterval,
+			ReplaceAllowedIPs:           true,
+			Endpoint: &net.UDPAddr{
+				IP:   settings.Endpoint.Addr().AsSlice(),
+				Port: int(settings.Endpoint.Port()),
 			},
 		},
 	}
 
-	return config, nil
+	return peers, nil
+}
+
+func makeMultiPeerConfigs(peers []Peer) (peerConfigs []wgtypes.PeerConfig, err error) {
+	peerConfigs = make([]wgtypes.PeerConfig, len(peers))
+	for i, peer := range peers {
+		publicKey, err := wgtypes.ParseKey(peer.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse public key for peer %d: %s", i, peer.PublicKey)
+		}
+
+		allowedIPs := make([]net.IPNet, len(peer.AllowedIPs))
+		for j, allowedIP := range peer.AllowedIPs {
+			allowedIPs[j] = net.IPNet{
+				IP:   allowedIP.Addr().AsSlice(),
+				Mask: net.CIDRMask(allowedIP.Bits(), allowedIP.Addr().BitLen()),
+			}
+		}
+
+		var persistentKeepaliveInterval *time.Duration
+		if peer.PersistentKeepaliveInterval > 0 {
+			persistentKeepaliveInterval = new(time.Duration)
+			*persistentKeepaliveInterval = peer.PersistentKeepaliveInterval
+		}
+
+		peerConfigs[i] = wgtypes.PeerConfig{
+			PublicKey:                   publicKey,
+			AllowedIPs:                  allowedIPs,
+			PersistentKeepaliveInterval: persistentKeepaliveInterval,
+			ReplaceAllowedIPs:           true,
+			Endpoint: &net.UDPAddr{
+				IP:   peer.Endpoint.Addr().AsSlice(),
+				Port: int(peer.Endpoint.Port()),
+			},
+		}
+	}
+
+	return peerConfigs, nil
 }
 
 func allIPv4() (prefix netip.Prefix) {

@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/qdm12/dns/v2/pkg/provider"
@@ -48,11 +49,33 @@ type DNS struct {
 	// Note, if the upstream type is [dnsUpstreamTypePlain] and this field is set,
 	// the Providers field is ignored.
 	UpstreamPlainAddresses []netip.AddrPort
+	// UpstreamDoHURLs are custom DNS over HTTPS upstream resolver URLs.
+	// They are only used if the UpstreamType is [DNSUpstreamTypeDoh].
+	UpstreamDoHURLs []string `json:"upstream_doh_urls"`
+	// DoHTimeout is the timeout for DNS over HTTPS requests.
+	// It defaults to 5s and cannot be nil in the internal state.
+	DoHTimeout *time.Duration `json:"doh_timeout"`
 }
 
 func (d DNS) validate() (err error) {
 	if !helpers.IsOneOf(d.UpstreamType, DNSUpstreamTypeDot, DNSUpstreamTypeDoh, DNSUpstreamTypePlain) {
 		return fmt.Errorf("DNS upstream type is not valid: %s", d.UpstreamType)
+	}
+
+	if len(d.UpstreamDoHURLs) > 0 && d.UpstreamType != DNSUpstreamTypeDoh {
+		return fmt.Errorf("DNS DoH upstream URLs are set but upstream type is %s, it must be %s",
+			d.UpstreamType, DNSUpstreamTypeDoh)
+	}
+
+	for i, dohURL := range d.UpstreamDoHURLs {
+		if !strings.HasPrefix(dohURL, "https://") {
+			return fmt.Errorf("DNS DoH upstream URL %q at index %d does not start with https://",
+				dohURL, i)
+		}
+	}
+
+	if *d.DoHTimeout <= 0 {
+		return fmt.Errorf("DoH timeout must be positive: %s", *d.DoHTimeout)
 	}
 
 	if !*d.ServerEnabled {
@@ -127,6 +150,8 @@ func (d *DNS) Copy() (copied DNS) {
 		IPv6:                   gosettings.CopyPointer(d.IPv6),
 		Blacklist:              d.Blacklist.copy(),
 		UpstreamPlainAddresses: gosettings.CopySlice(d.UpstreamPlainAddresses),
+		UpstreamDoHURLs:        gosettings.CopySlice(d.UpstreamDoHURLs),
+		DoHTimeout:             gosettings.CopyPointer(d.DoHTimeout),
 	}
 }
 
@@ -142,6 +167,8 @@ func (d *DNS) overrideWith(other DNS) {
 	d.IPv6 = gosettings.OverrideWithPointer(d.IPv6, other.IPv6)
 	d.Blacklist.overrideWith(other.Blacklist)
 	d.UpstreamPlainAddresses = gosettings.OverrideWithSlice(d.UpstreamPlainAddresses, other.UpstreamPlainAddresses)
+	d.UpstreamDoHURLs = gosettings.OverrideWithSlice(d.UpstreamDoHURLs, other.UpstreamDoHURLs)
+	d.DoHTimeout = gosettings.OverrideWithPointer(d.DoHTimeout, other.DoHTimeout)
 }
 
 func (d *DNS) setDefaults() {
@@ -154,6 +181,9 @@ func (d *DNS) setDefaults() {
 	const defaultUpdatePeriod = 24 * time.Hour
 	d.UpdatePeriod = gosettings.DefaultPointer(d.UpdatePeriod, defaultUpdatePeriod)
 	d.UpstreamPlainAddresses = gosettings.DefaultSlice(d.UpstreamPlainAddresses, []netip.AddrPort{})
+	d.UpstreamDoHURLs = gosettings.DefaultSlice(d.UpstreamDoHURLs, []string{})
+	const defaultDoHTimeout = 5 * time.Second
+	d.DoHTimeout = gosettings.DefaultPointer(d.DoHTimeout, defaultDoHTimeout)
 	d.Providers = gosettings.DefaultSlice(d.Providers, defaultDNSProviders())
 	d.Caching = gosettings.DefaultPointer(d.Caching, true)
 	d.IPv6 = gosettings.DefaultPointer(d.IPv6, false)
@@ -201,6 +231,17 @@ func (d DNS) toLinesNode() (node *gotree.Node) {
 		}
 	}
 
+	if len(d.UpstreamDoHURLs) > 0 {
+		dohURLs := node.Append("DoH upstream URLs:")
+		for _, dohURL := range d.UpstreamDoHURLs {
+			dohURLs.Append(dohURL)
+		}
+	}
+
+	if d.UpstreamType == DNSUpstreamTypeDoh {
+		node.Appendf("DoH timeout: %s", d.DoHTimeout)
+	}
+
 	node.Appendf("Caching: %s", gosettings.BoolToYesNo(d.Caching))
 	node.Appendf("IPv6: %s", gosettings.BoolToYesNo(d.IPv6))
 
@@ -246,6 +287,13 @@ func (d *DNS) read(r *reader.Reader) (err error) {
 	}
 
 	err = d.readUpstreamPlainAddresses(r)
+	if err != nil {
+		return err
+	}
+
+	d.UpstreamDoHURLs = r.CSV("DNS_DOH_URLS", reader.ForceLowercase(false))
+
+	d.DoHTimeout, err = r.DurationPtr("DNS_DOH_TIMEOUT")
 	if err != nil {
 		return err
 	}

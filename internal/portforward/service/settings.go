@@ -13,6 +13,7 @@ type Settings struct {
 	Enabled        *bool
 	PortForwarder  PortForwarder
 	Filepath       string
+	StateFilepath  string
 	UpCommand      string
 	DownCommand    string
 	Interface      string // needed for PIA, PrivateVPN and ProtonVPN, tun0 for example
@@ -28,6 +29,7 @@ func (s Settings) Copy() (copied Settings) {
 	copied.Enabled = gosettings.CopyPointer(s.Enabled)
 	copied.PortForwarder = s.PortForwarder
 	copied.Filepath = s.Filepath
+	copied.StateFilepath = s.StateFilepath
 	copied.UpCommand = s.UpCommand
 	copied.DownCommand = s.DownCommand
 	copied.Interface = s.Interface
@@ -44,6 +46,7 @@ func (s *Settings) OverrideWith(update Settings) {
 	s.Enabled = gosettings.OverrideWithPointer(s.Enabled, update.Enabled)
 	s.PortForwarder = gosettings.OverrideWithComparable(s.PortForwarder, update.PortForwarder)
 	s.Filepath = gosettings.OverrideWithComparable(s.Filepath, update.Filepath)
+	s.StateFilepath = gosettings.OverrideWithComparable(s.StateFilepath, update.StateFilepath)
 	s.UpCommand = gosettings.OverrideWithComparable(s.UpCommand, update.UpCommand)
 	s.DownCommand = gosettings.OverrideWithComparable(s.DownCommand, update.DownCommand)
 	s.Interface = gosettings.OverrideWithComparable(s.Interface, update.Interface)

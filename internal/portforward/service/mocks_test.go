@@ -69,6 +69,23 @@ func (mr *MockLoggerMockRecorder) Info(arg0 interface{}) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Info", reflect.TypeOf((*MockLogger)(nil).Info), arg0)
 }
 
+// Infof mocks base method.
+func (m *MockLogger) Infof(format string, args ...any) {
+	m.ctrl.T.Helper()
+	varargs := []interface{}{format}
+	for _, arg := range args {
+		varargs = append(varargs, arg)
+	}
+	m.ctrl.Call(m, "Infof", varargs...)
+}
+
+// Infof indicates an expected call of Infof.
+func (mr *MockLoggerMockRecorder) Infof(format interface{}, args ...interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]interface{}{format}, args...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Infof", reflect.TypeOf((*MockLogger)(nil).Infof), varargs...)
+}
+
 // Warn mocks base method.
 func (m *MockLogger) Warn(arg0 string) {
 	m.ctrl.T.Helper()

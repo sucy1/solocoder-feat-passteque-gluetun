@@ -31,6 +31,12 @@ type PortForwarding struct {
 	// to write to a file. It cannot be nil for the
 	// internal state
 	Filepath *string `json:"status_file_path"`
+	// StateFilepath is the port forwarding state file path
+	// to persist and restore full port forwarding state including
+	// ports, expiry time and session ID. It can be the empty string
+	// to indicate not to persist state. It cannot be nil for the
+	// internal state.
+	StateFilepath *string `json:"state_file_path"`
 	// UpCommand is the command to use when the port forwarding is up.
 	// It can be the empty string to indicate not to run a command.
 	// It cannot be nil in the internal state.
@@ -83,6 +89,14 @@ func (p PortForwarding) Validate(vpnProvider string) (err error) {
 		}
 	}
 
+	// Validate StateFilepath
+	if *p.StateFilepath != "" { // optional
+		_, err := filepath.Abs(*p.StateFilepath)
+		if err != nil {
+			return fmt.Errorf("state filepath is not valid: %w", err)
+		}
+	}
+
 	switch providerSelected {
 	case providers.PrivateInternetAccess:
 		const maxPortsCount = 1
@@ -124,6 +138,7 @@ func (p *PortForwarding) Copy() (copied PortForwarding) {
 		Enabled:        gosettings.CopyPointer(p.Enabled),
 		Provider:       gosettings.CopyPointer(p.Provider),
 		Filepath:       gosettings.CopyPointer(p.Filepath),
+		StateFilepath:  gosettings.CopyPointer(p.StateFilepath),
 		UpCommand:      gosettings.CopyPointer(p.UpCommand),
 		DownCommand:    gosettings.CopyPointer(p.DownCommand),
 		ListeningPorts: gosettings.CopySlice(p.ListeningPorts),
@@ -136,6 +151,7 @@ func (p *PortForwarding) OverrideWith(other PortForwarding) {
 	p.Enabled = gosettings.OverrideWithPointer(p.Enabled, other.Enabled)
 	p.Provider = gosettings.OverrideWithPointer(p.Provider, other.Provider)
 	p.Filepath = gosettings.OverrideWithPointer(p.Filepath, other.Filepath)
+	p.StateFilepath = gosettings.OverrideWithPointer(p.StateFilepath, other.StateFilepath)
 	p.UpCommand = gosettings.OverrideWithPointer(p.UpCommand, other.UpCommand)
 	p.DownCommand = gosettings.OverrideWithPointer(p.DownCommand, other.DownCommand)
 	p.ListeningPorts = gosettings.OverrideWithSlice(p.ListeningPorts, other.ListeningPorts)
@@ -147,6 +163,7 @@ func (p *PortForwarding) setDefaults() {
 	p.Enabled = gosettings.DefaultPointer(p.Enabled, false)
 	p.Provider = gosettings.DefaultPointer(p.Provider, "")
 	p.Filepath = gosettings.DefaultPointer(p.Filepath, "/tmp/gluetun/forwarded_port")
+	p.StateFilepath = gosettings.DefaultPointer(p.StateFilepath, "")
 	p.UpCommand = gosettings.DefaultPointer(p.UpCommand, "")
 	p.DownCommand = gosettings.DefaultPointer(p.DownCommand, "")
 	p.ListeningPorts = gosettings.DefaultSlice(p.ListeningPorts, []uint16{0}) // disabled
@@ -185,6 +202,12 @@ func (p PortForwarding) toLinesNode() (node *gotree.Node) {
 	}
 	node.Appendf("Forwarded port file path: %s", filepath)
 
+	stateFilepath := *p.StateFilepath
+	if stateFilepath == "" {
+		stateFilepath = "[not set]"
+	}
+	node.Appendf("Forwarded port state file path: %s", stateFilepath)
+
 	if *p.UpCommand != "" {
 		node.Appendf("Forwarded port up command: %s", *p.UpCommand)
 	}
@@ -219,6 +242,9 @@ func (p *PortForwarding) read(r *reader.Reader) (err error) {
 			"PORT_FORWARDING_STATUS_FILE",
 			"PRIVATE_INTERNET_ACCESS_VPN_PORT_FORWARDING_STATUS_FILE",
 		))
+
+	p.StateFilepath = r.Get("VPN_PORT_FORWARDING_STATE_FILE",
+		reader.ForceLowercase(false))
 
 	p.UpCommand = r.Get("VPN_PORT_FORWARDING_UP_COMMAND",
 		reader.ForceLowercase(false))

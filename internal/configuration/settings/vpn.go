@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/qdm12/gluetun/internal/constants/vpn"
 	"github.com/qdm12/gosettings"
@@ -28,6 +29,17 @@ type VPN struct {
 	// It can be the empty string to indicate to NOT run a command.
 	// It cannot be nil in the internal state.
 	DownCommand *string `json:"down_command"`
+	// ReadyHook is a command or URL to call when the VPN connection is ready.
+	// It can be the empty string to indicate not to run a hook.
+	// It cannot be nil in the internal state.
+	ReadyHook *string `json:"ready_hook"`
+	// DisconnectHook is a command or URL to call on unexpected VPN disconnect.
+	// It can be the empty string to indicate not to run a hook.
+	// It cannot be nil in the internal state.
+	DisconnectHook *string `json:"disconnect_hook"`
+	// HookTimeout is the timeout for hook execution.
+	// It cannot be nil in the internal state.
+	HookTimeout *time.Duration `json:"hook_timeout"`
 }
 
 // Validate validates VPN settings, using the filter choices getter (aka servers data storage),
@@ -69,19 +81,26 @@ func (v *VPN) Validate(filterChoicesGetter FilterChoicesGetter, ipv6Supported bo
 		return fmt.Errorf("PMTUD settings: %w", err)
 	}
 
+	if *v.HookTimeout <= 0 {
+		return fmt.Errorf("hook timeout is not positive: %s", *v.HookTimeout)
+	}
+
 	return nil
 }
 
 func (v *VPN) Copy() (copied VPN) {
 	return VPN{
-		Type:        v.Type,
-		Provider:    v.Provider.copy(),
-		AmneziaWg:   v.AmneziaWg.copy(),
-		OpenVPN:     v.OpenVPN.copy(),
-		Wireguard:   v.Wireguard.copy(),
-		PMTUD:       v.PMTUD.copy(),
-		UpCommand:   gosettings.CopyPointer(v.UpCommand),
-		DownCommand: gosettings.CopyPointer(v.DownCommand),
+		Type:           v.Type,
+		Provider:       v.Provider.copy(),
+		AmneziaWg:      v.AmneziaWg.copy(),
+		OpenVPN:        v.OpenVPN.copy(),
+		Wireguard:      v.Wireguard.copy(),
+		PMTUD:          v.PMTUD.copy(),
+		UpCommand:      gosettings.CopyPointer(v.UpCommand),
+		DownCommand:    gosettings.CopyPointer(v.DownCommand),
+		ReadyHook:      gosettings.CopyPointer(v.ReadyHook),
+		DisconnectHook: gosettings.CopyPointer(v.DisconnectHook),
+		HookTimeout:    gosettings.CopyPointer(v.HookTimeout),
 	}
 }
 
@@ -94,6 +113,9 @@ func (v *VPN) OverrideWith(other VPN) {
 	v.PMTUD.overrideWith(other.PMTUD)
 	v.UpCommand = gosettings.OverrideWithPointer(v.UpCommand, other.UpCommand)
 	v.DownCommand = gosettings.OverrideWithPointer(v.DownCommand, other.DownCommand)
+	v.ReadyHook = gosettings.OverrideWithPointer(v.ReadyHook, other.ReadyHook)
+	v.DisconnectHook = gosettings.OverrideWithPointer(v.DisconnectHook, other.DisconnectHook)
+	v.HookTimeout = gosettings.OverrideWithPointer(v.HookTimeout, other.HookTimeout)
 }
 
 func (v *VPN) setDefaults() {
@@ -105,6 +127,10 @@ func (v *VPN) setDefaults() {
 	v.PMTUD.setDefaults()
 	v.UpCommand = gosettings.DefaultPointer(v.UpCommand, "")
 	v.DownCommand = gosettings.DefaultPointer(v.DownCommand, "")
+	v.ReadyHook = gosettings.DefaultPointer(v.ReadyHook, "")
+	v.DisconnectHook = gosettings.DefaultPointer(v.DisconnectHook, "")
+	const defaultHookTimeout = 30 * time.Second
+	v.HookTimeout = gosettings.DefaultPointer(v.HookTimeout, defaultHookTimeout)
 }
 
 func (v VPN) String() string {
@@ -132,6 +158,13 @@ func (v VPN) toLinesNode() (node *gotree.Node) {
 	if *v.DownCommand != "" {
 		node.Appendf("Down command: %s", *v.DownCommand)
 	}
+	if *v.ReadyHook != "" {
+		node.Appendf("Ready hook: %s", *v.ReadyHook)
+	}
+	if *v.DisconnectHook != "" {
+		node.Appendf("Disconnect hook: %s", *v.DisconnectHook)
+	}
+	node.Appendf("Hook timeout: %s", *v.HookTimeout)
 
 	return node
 }
@@ -168,6 +201,15 @@ func (v *VPN) read(r *reader.Reader) (err error) {
 	v.UpCommand = r.Get("VPN_UP_COMMAND", reader.ForceLowercase(false))
 
 	v.DownCommand = r.Get("VPN_DOWN_COMMAND", reader.ForceLowercase(false))
+
+	v.ReadyHook = r.Get("VPN_READY_HOOK", reader.ForceLowercase(false))
+
+	v.DisconnectHook = r.Get("VPN_DISCONNECT_HOOK", reader.ForceLowercase(false))
+
+	v.HookTimeout, err = r.DurationPtr("VPN_HOOK_TIMEOUT")
+	if err != nil {
+		return fmt.Errorf("reading hook timeout: %w", err)
+	}
 
 	return nil
 }

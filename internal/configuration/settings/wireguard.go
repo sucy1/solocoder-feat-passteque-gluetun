@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,18 @@ type Wireguard struct {
 	// It defaults to "auto" and cannot be the empty string
 	// in the internal state.
 	Implementation string `json:"implementation"`
+	// Peers is the list of Wireguard peers to connect to.
+	// If set, it takes precedence over the single-peer fields
+	// (PublicKey, EndpointIP, etc. from WireguardSelection).
+	Peers []WireguardPeer `json:"peers"`
+}
+
+type WireguardPeer struct {
+	PublicKey                   *string        `json:"public_key"`
+	AllowedIPs                  []netip.Prefix `json:"allowed_ips"`
+	EndpointIP                  netip.Addr     `json:"endpoint_ip"`
+	EndpointPort                *uint16        `json:"endpoint_port"`
+	PersistentKeepaliveInterval *time.Duration `json:"persistent_keep_alive_interval"`
 }
 
 var regexpInterfaceName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
@@ -123,6 +136,12 @@ func (w Wireguard) validate(vpnProvider string, ipv6Supported, amneziawg bool) (
 		}
 	}
 
+	for i, peer := range w.Peers {
+		if err := peer.validate(); err != nil {
+			return fmt.Errorf("validating peer %d: %w", i, err)
+		}
+	}
+
 	return nil
 }
 
@@ -136,6 +155,7 @@ func (w *Wireguard) copy() (copied Wireguard) {
 		Interface:                   w.Interface,
 		MTU:                         w.MTU,
 		Implementation:              w.Implementation,
+		Peers:                       gosettings.CopySlice(w.Peers),
 	}
 }
 
@@ -149,6 +169,7 @@ func (w *Wireguard) overrideWith(other Wireguard) {
 	w.Interface = gosettings.OverrideWithComparable(w.Interface, other.Interface)
 	w.MTU = gosettings.OverrideWithComparable(w.MTU, other.MTU)
 	w.Implementation = gosettings.OverrideWithComparable(w.Implementation, other.Implementation)
+	w.Peers = gosettings.OverrideWithSlice(w.Peers, other.Peers)
 }
 
 func (w *Wireguard) setDefaults(vpnProvider string) {
@@ -173,6 +194,9 @@ func (w *Wireguard) setDefaults(vpnProvider string) {
 	w.Interface = gosettings.DefaultComparable(w.Interface, "wg0")
 	w.MTU = gosettings.DefaultPointer(w.MTU, 0)
 	w.Implementation = gosettings.DefaultComparable(w.Implementation, "auto")
+	for i := range w.Peers {
+		w.Peers[i].setDefaults()
+	}
 }
 
 func (w Wireguard) String() string {
@@ -215,6 +239,13 @@ func (w Wireguard) toLinesNode() (node *gotree.Node) {
 
 	if w.Implementation != "auto" {
 		node.Appendf("Implementation: %s", w.Implementation)
+	}
+
+	if len(w.Peers) > 0 {
+		peersNode := node.Append("Peers:")
+		for i, peer := range w.Peers {
+			peersNode.AppendNode(peer.toLinesNode(i))
+		}
 	}
 
 	return node
@@ -265,5 +296,113 @@ func (w *Wireguard) read(r *reader.Reader, amneziaWG bool) (err error) {
 	if err != nil {
 		return err
 	}
+
+	w.Peers, err = readWireguardPeers(r, prefix)
+	if err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func (p *WireguardPeer) validate() (err error) {
+	if *p.PublicKey == "" {
+		return errors.New("public key is not set")
+	}
+	_, err = wgtypes.ParseKey(*p.PublicKey)
+	if err != nil {
+		return fmt.Errorf("public key is not valid: %w", err)
+	}
+
+	if !p.EndpointIP.IsValid() {
+		return errors.New("endpoint IP is not set")
+	}
+
+	if len(p.AllowedIPs) == 0 {
+		return errors.New("allowed IPs is not set")
+	}
+	for i, allowedIP := range p.AllowedIPs {
+		if !allowedIP.IsValid() {
+			return fmt.Errorf("allowed IP is not set: for allowed ip %d of %d", i+1, len(p.AllowedIPs))
+		}
+	}
+
+	if p.PersistentKeepaliveInterval != nil && *p.PersistentKeepaliveInterval < 0 {
+		return fmt.Errorf("persistent keep alive interval is negative: %s", *p.PersistentKeepaliveInterval)
+	}
+
+	return nil
+}
+
+func (p *WireguardPeer) setDefaults() {
+	p.PublicKey = gosettings.DefaultPointer(p.PublicKey, "")
+	p.EndpointPort = gosettings.DefaultPointer(p.EndpointPort, 0)
+	p.PersistentKeepaliveInterval = gosettings.DefaultPointer(p.PersistentKeepaliveInterval, 0)
+	if len(p.AllowedIPs) == 0 {
+		p.AllowedIPs = []netip.Prefix{
+			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
+		}
+	}
+}
+
+func (p WireguardPeer) toLinesNode(peerIndex int) (node *gotree.Node) {
+	node = gotree.New(fmt.Sprintf("Peer %d:", peerIndex))
+
+	if *p.PublicKey != "" {
+		node.Appendf("Public key: %s", *p.PublicKey)
+	}
+
+	if p.EndpointIP.IsValid() {
+		node.Appendf("Endpoint IP: %s", p.EndpointIP)
+	}
+
+	if *p.EndpointPort != 0 {
+		node.Appendf("Endpoint port: %d", *p.EndpointPort)
+	}
+
+	if len(p.AllowedIPs) > 0 {
+		allowedIPsNode := node.Appendf("Allowed IPs:")
+		for _, allowedIP := range p.AllowedIPs {
+			allowedIPsNode.Append(allowedIP.String())
+		}
+	}
+
+	if *p.PersistentKeepaliveInterval > 0 {
+		node.Appendf("Persistent keepalive interval: %s", p.PersistentKeepaliveInterval)
+	}
+
+	return node
+}
+
+func readWireguardPeers(r *reader.Reader, prefix string) (peers []WireguardPeer, err error) {
+	const maxPeers = 64
+	for i := range maxPeers {
+		indexString := strconv.Itoa(i)
+		peerPrefix := prefix + "_PEERS_" + indexString + "_"
+		publicKey := r.Get(peerPrefix+"PUBLIC_KEY", reader.ForceLowercase(false))
+		if publicKey == nil {
+			break
+		}
+		var peer WireguardPeer
+		peer.PublicKey = publicKey
+		peer.EndpointIP, err = r.NetipAddr(peerPrefix + "ENDPOINT_IP")
+		if err != nil {
+			return nil, fmt.Errorf("parsing peer %d endpoint IP: %w", i, err)
+		}
+		peer.EndpointPort, err = r.Uint16Ptr(peerPrefix + "ENDPOINT_PORT")
+		if err != nil {
+			return nil, fmt.Errorf("parsing peer %d endpoint port: %w", i, err)
+		}
+		peer.AllowedIPs, err = r.CSVNetipPrefixes(peerPrefix + "ALLOWED_IPS")
+		if err != nil {
+			return nil, fmt.Errorf("parsing peer %d allowed IPs: %w", i, err)
+		}
+		peer.PersistentKeepaliveInterval, err = r.DurationPtr(peerPrefix + "PERSISTENT_KEEPALIVE_INTERVAL")
+		if err != nil {
+			return nil, fmt.Errorf("parsing peer %d persistent keepalive interval: %w", i, err)
+		}
+		peers = append(peers, peer)
+	}
+	return peers, nil
 }

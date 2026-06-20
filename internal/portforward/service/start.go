@@ -45,9 +45,22 @@ func (s *Service) Start(ctx context.Context) (runError <-chan error, err error) 
 		Password:       s.settings.Password,
 		PortsCount:     s.settings.PortsCount,
 	}
-	internalToExternalPorts, err := s.settings.PortForwarder.PortForward(ctx, obj)
+
+	var internalToExternalPorts map[uint16]uint16
+	persistedPorts, valid, err := s.LoadPersistedState()
 	if err != nil {
-		return nil, fmt.Errorf("port forwarding for the first time: %w", err)
+		s.logger.Warn("loading persisted port forward state: " + err.Error())
+	}
+	if valid {
+		internalToExternalPorts = make(map[uint16]uint16, len(persistedPorts))
+		for _, port := range persistedPorts {
+			internalToExternalPorts[port] = port
+		}
+	} else {
+		internalToExternalPorts, err = s.settings.PortForwarder.PortForward(ctx, obj)
+		if err != nil {
+			return nil, fmt.Errorf("port forwarding for the first time: %w", err)
+		}
 	}
 
 	s.portMutex.Lock()
@@ -56,6 +69,13 @@ func (s *Service) Start(ctx context.Context) (runError <-chan error, err error) 
 	err = s.onNewPorts(ctx, internalToExternalPorts)
 	if err != nil {
 		return nil, err
+	}
+
+	externalPorts := slices.Collect(maps.Values(internalToExternalPorts))
+	slices.Sort(externalPorts)
+	writeErr := s.writeStateFile(PortForwardState{Ports: externalPorts})
+	if writeErr != nil {
+		s.logger.Warn("writing port forward state file: " + writeErr.Error())
 	}
 
 	keepPortCtx, keepPortCancel := context.WithCancel(context.Background())

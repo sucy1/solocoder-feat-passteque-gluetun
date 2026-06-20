@@ -63,6 +63,8 @@ func (l *Loop) Run(ctx context.Context, done chan<- struct{}) {
 				icmpAddrs: settings.PMTUD.ICMPAddresses,
 				tcpAddrs:  settings.PMTUD.TCPAddresses,
 			},
+			readyHook:   *settings.ReadyHook,
+			hookTimeout: *settings.HookTimeout,
 			serverIP:       connection.IP,
 			serverName:     connection.ServerName,
 			canPortForward: connection.PortForward,
@@ -93,7 +95,7 @@ func (l *Loop) Run(ctx context.Context, done chan<- struct{}) {
 			case <-tunnelReady:
 				go l.onTunnelUp(vpnCtx, ctx, tunnelUpData)
 			case <-ctx.Done():
-				l.cleanup()
+				l.cleanup(false)
 				vpnCancel()
 				<-waitError
 				close(waitError)
@@ -101,7 +103,7 @@ func (l *Loop) Run(ctx context.Context, done chan<- struct{}) {
 			case <-l.stop:
 				l.userTrigger = true
 				l.logger.Info("stopping")
-				l.cleanup()
+				l.cleanup(false)
 				vpnCancel()
 				<-waitError
 				// do not close waitError or the waitError
@@ -114,7 +116,7 @@ func (l *Loop) Run(ctx context.Context, done chan<- struct{}) {
 			case err := <-waitError: // unexpected error
 				l.statusManager.Lock() // prevent SetStatus from running in parallel
 
-				l.cleanup()
+				l.cleanup(true)
 				vpnCancel()
 				l.statusManager.SetStatus(constants.Crashed)
 				l.logAndWait(ctx, err)
