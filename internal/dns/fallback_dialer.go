@@ -3,61 +3,77 @@ package dns
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/qdm12/dns/v2/pkg/server"
+	"github.com/qdm12/dns/v2/pkg/provider"
 )
 
-type fallbackDialer struct {
-	dialers []server.Dialer
+type dohFallbackDialer struct {
+	urls     []string
+	ipVersion string
+	timeout  time.Duration
 }
 
-func newFallbackDialer(dialers ...server.Dialer) *fallbackDialer {
-	return &fallbackDialer{
-		dialers: dialers,
+func newDoHFallbackDialer(urls []string, timeout time.Duration, ipVersion string) *dohFallbackDialer {
+	return &dohFallbackDialer{
+		urls:      urls,
+		timeout:   timeout,
+		ipVersion: ipVersion,
 	}
 }
 
-func (d *fallbackDialer) String() string {
-	names := make([]string, len(d.dialers))
-	for i, dialer := range d.dialers {
-		names[i] = dialer.String()
-	}
-	return "fallback(" + strings.Join(names, ", ") + ")"
+func (d *dohFallbackDialer) String() string {
+	return "doh-fallback(" + strings.Join(d.urls, ", ") + ")"
 }
 
-func (d *fallbackDialer) ReusableConnsSupported() bool {
+func (d *dohFallbackDialer) ReusableConnsSupported() bool {
 	return false
 }
 
-func (d *fallbackDialer) Addresses() []string {
-	var addresses []string
-	for _, dialer := range d.dialers {
-		addresses = append(addresses, dialer.Addresses()...)
-	}
-	return addresses
+func (d *dohFallbackDialer) Addresses() []string {
+	return d.urls
 }
 
-func (d *fallbackDialer) Dial(ctx context.Context, network, address string) (
+func (d *dohFallbackDialer) Dial(ctx context.Context, network, address string) (
 	conn net.Conn, err error,
 ) {
-	return &fallbackConn{
-		ctx:     ctx,
-		dialers: d.dialers,
-		network: network,
-		address: address,
+	transport := &http.Transport{
+		ForceAttemptHTTP2:   true,
+		TLSHandshakeTimeout: d.timeout,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if d.ipVersion == "ipv6" {
+				return (&net.Dialer{
+					Timeout: d.timeout,
+				}).DialContext(ctx, "tcp6", addr)
+			}
+			return (&net.Dialer{
+				Timeout: d.timeout,
+			}).DialContext(ctx, "tcp4", addr)
+		},
+	}
+	httpClient := &http.Client{
+		Timeout:   d.timeout,
+		Transport: transport,
+	}
+
+	return &dohFallbackConn{
+		ctx:        ctx,
+		urls:       d.urls,
+		httpClient: httpClient,
 	}, nil
 }
 
-type fallbackConn struct {
+type dohFallbackConn struct {
 	ctx        context.Context
-	dialers    []server.Dialer
-	network    string
-	address    string
+	urls       []string
+	httpClient *http.Client
 	writeBuf   bytes.Buffer
 	readBuf    bytes.Buffer
 	readOnce   sync.Once
@@ -67,7 +83,9 @@ type fallbackConn struct {
 	closeMutex sync.Mutex
 }
 
-func (c *fallbackConn) Read(b []byte) (n int, err error) {
+const dohDNSMessageContentType = "application/dns-message"
+
+func (c *dohFallbackConn) Read(b []byte) (n int, err error) {
 	c.readOnce.Do(c.doFallbackRead)
 	if c.readErr != nil {
 		return 0, c.readErr
@@ -75,40 +93,41 @@ func (c *fallbackConn) Read(b []byte) (n int, err error) {
 	return c.readBuf.Read(b)
 }
 
-func (c *fallbackConn) Write(b []byte) (n int, err error) {
+func (c *dohFallbackConn) Write(b []byte) (n int, err error) {
 	return c.writeBuf.Write(b)
 }
 
-func (c *fallbackConn) Close() error {
+func (c *dohFallbackConn) Close() error {
 	c.closeMutex.Lock()
 	defer c.closeMutex.Unlock()
 	c.closed = true
+	c.httpClient.CloseIdleConnections()
 	return nil
 }
 
-func (c *fallbackConn) LocalAddr() net.Addr {
+func (c *dohFallbackConn) LocalAddr() net.Addr {
 	return nil
 }
 
-func (c *fallbackConn) RemoteAddr() net.Addr {
+func (c *dohFallbackConn) RemoteAddr() net.Addr {
 	return nil
 }
 
-func (c *fallbackConn) SetDeadline(t time.Time) error {
+func (c *dohFallbackConn) SetDeadline(t time.Time) error {
 	c.deadline = t
 	return nil
 }
 
-func (c *fallbackConn) SetReadDeadline(t time.Time) error {
+func (c *dohFallbackConn) SetReadDeadline(t time.Time) error {
 	c.deadline = t
 	return nil
 }
 
-func (c *fallbackConn) SetWriteDeadline(time.Time) error {
+func (c *dohFallbackConn) SetWriteDeadline(time.Time) error {
 	return nil
 }
 
-func (c *fallbackConn) doFallbackRead() {
+func (c *dohFallbackConn) doFallbackRead() {
 	ctx := c.ctx
 	if !c.deadline.IsZero() {
 		var cancel context.CancelFunc
@@ -117,31 +136,33 @@ func (c *fallbackConn) doFallbackRead() {
 	}
 
 	writeData := c.writeBuf.Bytes()
+	const lengthPrefixSize = 2
+	if len(writeData) < lengthPrefixSize {
+		c.readErr = fmt.Errorf("DNS query too short: %d bytes", len(writeData))
+		return
+	}
+
+	dnsMessage := writeData[lengthPrefixSize:]
 
 	var errs []error
-	for i, dialer := range c.dialers {
-		conn, err := dialer.Dial(ctx, c.network, c.address)
+	for i, url := range c.urls {
+		responseBody, err := c.doHTTPRequest(ctx, url, dnsMessage)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("dialer %d (%s): dial: %w", i, dialer, err))
+			errs = append(errs, fmt.Errorf("url %d (%s): %w", i, url, err))
 			continue
 		}
 
-		if !c.deadline.IsZero() {
-			_ = conn.SetDeadline(c.deadline)
+		responseLength := uint16(len(responseBody)) //nolint:gosec
+		err = binary.Write(&c.readBuf, binary.BigEndian, responseLength)
+		if err != nil {
+			c.readErr = fmt.Errorf("writing response length prefix: %w", err)
+			return
 		}
 
-		_, err = conn.Write(writeData)
+		_, err = c.readBuf.Write(responseBody)
 		if err != nil {
-			_ = conn.Close()
-			errs = append(errs, fmt.Errorf("dialer %d (%s): write: %w", i, dialer, err))
-			continue
-		}
-
-		_, err = c.readBuf.ReadFrom(conn)
-		_ = conn.Close()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("dialer %d (%s): read: %w", i, dialer, err))
-			continue
+			c.readErr = fmt.Errorf("writing response body: %w", err)
+			return
 		}
 
 		return
@@ -152,6 +173,44 @@ func (c *fallbackConn) doFallbackRead() {
 		for i, err := range errs {
 			errStrs[i] = err.Error()
 		}
-		c.readErr = fmt.Errorf("all dialers failed: %s", strings.Join(errStrs, "; "))
+		c.readErr = fmt.Errorf("all DoH URLs failed: %s", strings.Join(errStrs, "; "))
 	}
+}
+
+func (c *dohFallbackConn) doHTTPRequest(ctx context.Context, url string, dnsMessage []byte) (
+	body []byte, err error,
+) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(dnsMessage))
+	if err != nil {
+		return nil, fmt.Errorf("creating HTTP request: %w", err)
+	}
+	request.Header.Set("Content-Type", dohDNSMessageContentType)
+	request.Header.Set("Accept", dohDNSMessageContentType)
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("performing HTTP request: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected HTTP status: %s", response.Status)
+	}
+
+	body, err = io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading HTTP response body: %w", err)
+	}
+
+	return body, nil
+}
+
+func providersToDoHURLs(providers []provider.Provider) (urls []string) {
+	urls = make([]string, 0, len(providers))
+	for _, p := range providers {
+		if p.DoH.URL != "" {
+			urls = append(urls, p.DoH.URL)
+		}
+	}
+	return urls
 }

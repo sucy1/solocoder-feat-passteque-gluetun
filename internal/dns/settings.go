@@ -6,7 +6,6 @@ import (
 	"net/netip"
 	"slices"
 
-	"github.com/qdm12/dns/v2/pkg/doh"
 	"github.com/qdm12/dns/v2/pkg/dot"
 	cachemiddleware "github.com/qdm12/dns/v2/pkg/middlewares/cache"
 	"github.com/qdm12/dns/v2/pkg/middlewares/cache/lru"
@@ -53,20 +52,11 @@ func buildServerSettings(userSettings settings.DNS,
 			return server.Settings{}, fmt.Errorf("creating DNS over TLS dialer: %w", err)
 		}
 	case settings.DNSUpstreamTypeDoh:
-		dohDialers := make([]server.Dialer, 0, len(upstreamResolvers))
-		for i := range upstreamResolvers {
-			dialerSettings := doh.Settings{
-				UpstreamResolvers: []provider.Provider{upstreamResolvers[i]},
-				Timeout:           *userSettings.DoHTimeout,
-				IPVersion:         ipVersion,
-			}
-			dohDialer, err := doh.New(dialerSettings)
-			if err != nil {
-				return server.Settings{}, fmt.Errorf("creating DNS over HTTPS dialer %d: %w", i, err)
-			}
-			dohDialers = append(dohDialers, dohDialer)
+		dohURLs := providersToDoHURLs(upstreamResolvers)
+		if len(dohURLs) == 0 {
+			return server.Settings{}, fmt.Errorf("no DoH URLs found in upstream resolvers")
 		}
-		dialer = newFallbackDialer(dohDialers...)
+		dialer = newDoHFallbackDialer(dohURLs, *userSettings.DoHTimeout, ipVersion)
 	case settings.DNSUpstreamTypePlain:
 		dialerSettings := plain.Settings{
 			UpstreamResolvers: upstreamResolvers,

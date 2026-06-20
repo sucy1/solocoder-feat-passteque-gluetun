@@ -25,17 +25,26 @@ func (h *handler) isAuthorized(responseWriter http.ResponseWriter, request *http
 		responseWriter.WriteHeader(http.StatusUnauthorized)
 		return false
 	}
-	usernamePassword := strings.Split(string(b), ":")
-	const expectedFields = 2
-	if len(usernamePassword) != expectedFields {
+	const maxSplitFields = 2
+	usernamePassword := strings.SplitN(string(b), ":", maxSplitFields)
+	if len(usernamePassword) == 0 {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		return false
 	}
-	if h.username != usernamePassword[0] || h.password != usernamePassword[1] {
-		h.logger.Info(fmt.Sprintf("Username (%q) or password (%q) mismatch from %s",
-			usernamePassword[0], usernamePassword[1], request.RemoteAddr))
-		h.logger.Debug("username provided \"" + usernamePassword[0] +
-			"\" and password provided \"" + usernamePassword[1] + "\"")
+	username := usernamePassword[0]
+	password := ""
+	if len(usernamePassword) >= maxSplitFields {
+		password = usernamePassword[1]
+	}
+	if h.username != username {
+		h.logger.Info(fmt.Sprintf("Username (%q) mismatch from %s",
+			username, request.RemoteAddr))
+		responseWriter.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+	if h.password != "" && h.password != password {
+		h.logger.Info(fmt.Sprintf("Password (%q) mismatch from %s",
+			password, request.RemoteAddr))
 		responseWriter.WriteHeader(http.StatusUnauthorized)
 		return false
 	}
