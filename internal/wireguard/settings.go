@@ -121,6 +121,11 @@ func (s *Settings) Check() (err error) {
 				return fmt.Errorf("peer %d: %w", i, err)
 			}
 		}
+		if len(s.Peers) > 1 {
+			if err := checkNoPeerAllowedIPsOverlap(s.Peers); err != nil {
+				return err
+			}
+		}
 	} else {
 		if s.PublicKey == "" {
 			return errors.New("public key is missing")
@@ -389,4 +394,39 @@ func (p Peer) ToLines(settings ToLinesSettings) (lines []string) {
 	}
 
 	return lines
+}
+
+func checkNoPeerAllowedIPsOverlap(peers []Peer) (err error) {
+	type allowedIPInfo struct {
+		peerIndex int
+		prefix    netip.Prefix
+	}
+	var allAllowedIPs []allowedIPInfo
+	for i, peer := range peers {
+		for _, prefix := range peer.AllowedIPs {
+			allAllowedIPs = append(allAllowedIPs, allowedIPInfo{
+				peerIndex: i,
+				prefix:    prefix,
+			})
+		}
+	}
+
+	for i := range allAllowedIPs {
+		for j := i + 1; j < len(allAllowedIPs); j++ {
+			a := allAllowedIPs[i]
+			b := allAllowedIPs[j]
+			if a.peerIndex == b.peerIndex {
+				continue
+			}
+			if peerPrefixesOverlap(a.prefix, b.prefix) {
+				return fmt.Errorf("allowed IPs overlap between peer %d (%s) and peer %d (%s)",
+					a.peerIndex, a.prefix, b.peerIndex, b.prefix)
+			}
+		}
+	}
+	return nil
+}
+
+func peerPrefixesOverlap(a, b netip.Prefix) bool {
+	return a.Contains(b.Addr()) || b.Contains(a.Addr())
 }

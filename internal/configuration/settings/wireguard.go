@@ -142,7 +142,48 @@ func (w Wireguard) validate(vpnProvider string, ipv6Supported, amneziawg bool) (
 		}
 	}
 
+	if len(w.Peers) > 1 {
+		if err := validateNoPeerAllowedIPsOverlap(w.Peers); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+func validateNoPeerAllowedIPsOverlap(peers []WireguardPeer) (err error) {
+	type allowedIPInfo struct {
+		peerIndex int
+		prefix    netip.Prefix
+	}
+	var allAllowedIPs []allowedIPInfo
+	for i, peer := range peers {
+		for _, prefix := range peer.AllowedIPs {
+			allAllowedIPs = append(allAllowedIPs, allowedIPInfo{
+				peerIndex: i,
+				prefix:    prefix,
+			})
+		}
+	}
+
+	for i := range allAllowedIPs {
+		for j := i + 1; j < len(allAllowedIPs); j++ {
+			a := allAllowedIPs[i]
+			b := allAllowedIPs[j]
+			if a.peerIndex == b.peerIndex {
+				continue
+			}
+			if prefixesOverlap(a.prefix, b.prefix) {
+				return fmt.Errorf("allowed IPs overlap between peer %d (%s) and peer %d (%s)",
+					a.peerIndex, a.prefix, b.peerIndex, b.prefix)
+			}
+		}
+	}
+	return nil
+}
+
+func prefixesOverlap(a, b netip.Prefix) bool {
+	return a.Contains(b.Addr()) || b.Contains(a.Addr())
 }
 
 func (w *Wireguard) copy() (copied Wireguard) {

@@ -81,8 +81,8 @@ func (v *VPN) Validate(filterChoicesGetter FilterChoicesGetter, ipv6Supported bo
 		return fmt.Errorf("PMTUD settings: %w", err)
 	}
 
-	if *v.HookTimeout <= 0 {
-		return fmt.Errorf("hook timeout is not positive: %s", *v.HookTimeout)
+	if *v.HookTimeout < 0 {
+		return fmt.Errorf("hook timeout is negative: %s", *v.HookTimeout)
 	}
 
 	return nil

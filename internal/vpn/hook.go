@@ -17,8 +17,12 @@ func executeHook(ctx context.Context, hook string, timeout time.Duration,
 		return
 	}
 
-	hookCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	hookCtx := ctx
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		hookCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	if strings.HasPrefix(hook, "http://") || strings.HasPrefix(hook, "https://") {
 		executeHTTPHook(hookCtx, hook, logger, client)

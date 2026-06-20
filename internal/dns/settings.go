@@ -53,15 +53,20 @@ func buildServerSettings(userSettings settings.DNS,
 			return server.Settings{}, fmt.Errorf("creating DNS over TLS dialer: %w", err)
 		}
 	case settings.DNSUpstreamTypeDoh:
-		dialerSettings := doh.Settings{
-			UpstreamResolvers: upstreamResolvers,
-			Timeout:           *userSettings.DoHTimeout,
-			IPVersion:         ipVersion,
+		dohDialers := make([]server.Dialer, 0, len(upstreamResolvers))
+		for i := range upstreamResolvers {
+			dialerSettings := doh.Settings{
+				UpstreamResolvers: []provider.Provider{upstreamResolvers[i]},
+				Timeout:           *userSettings.DoHTimeout,
+				IPVersion:         ipVersion,
+			}
+			dohDialer, err := doh.New(dialerSettings)
+			if err != nil {
+				return server.Settings{}, fmt.Errorf("creating DNS over HTTPS dialer %d: %w", i, err)
+			}
+			dohDialers = append(dohDialers, dohDialer)
 		}
-		dialer, err = doh.New(dialerSettings)
-		if err != nil {
-			return server.Settings{}, fmt.Errorf("creating DNS over HTTPS dialer: %w", err)
-		}
+		dialer = newFallbackDialer(dohDialers...)
 	case settings.DNSUpstreamTypePlain:
 		dialerSettings := plain.Settings{
 			UpstreamResolvers: upstreamResolvers,
